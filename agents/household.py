@@ -117,9 +117,9 @@ class HouseholdAgent(Agent):
         self.cash -= actual_spent
         self.debt_service_reserve = min(self.debt_service_reserve, self.cash)
 
-        # ALV maksetaan heti tässä
+        # ALV maksetaan heti tässä (v0.8: käytetään state.collect_vat)
         vat_amount = actual_spent * self.model.vat_rate
-        self.model.state.cash_balance += vat_amount
+        self.model.state.collect_vat(vat_amount)
 
         # Palauta kulutettu summa (nettona yritykselle)
         return actual_spent - vat_amount

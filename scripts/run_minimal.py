@@ -71,6 +71,21 @@ def main() -> None:
     print(f"Valmistuneita asuntoja/kk (ka): {model_df['dwellings_completed_per_month'].mean():.2f}")
     print(f"Rakennusliikkeiden kassa: {last['construction_sector_cash']:,.0f} €")
     print(f"Keskimääräinen voittomarginaali: {last['avg_construction_profit_margin']:.1%}")
+    
+    print("\n=== Valtio (v0.8) ===")
+    print(f"Kuukausitulot: {last['state_monthly_revenue']:,.0f} €")
+    print(f"  - Tulovero: {last['state_income_tax']:,.0f} € ({last['state_income_tax']/last['state_monthly_revenue']*100:.1f}%)")
+    print(f"  - Yhteisövero: {last['state_corporate_tax']:,.0f} € ({last['state_corporate_tax']/last['state_monthly_revenue']*100:.1f}%)")
+    print(f"  - ALV: {last['state_vat']:,.0f} € ({last['state_vat']/last['state_monthly_revenue']*100:.1f}%)")
+    print(f"  - Myyntivoittovero: {last['state_capital_gains_tax']:,.0f} €")
+    print(f"Kuukausimmenot: {last['state_monthly_expenses']:,.0f} €")
+    print(f"  - Tuet: {last['state_transfers']:,.0f} €")
+    print(f"  - Velanhoito: {last['state_debt_service']:,.0f} €")
+    print(f"  - Julkiset hankinnat: {last['state_public_procurement']:,.0f} €")
+    print(f"Ylijäämä/alijäämä: {last['state_surplus']:,.0f} €")
+    print(f"Valtion velka: {last['state_total_debt']:,.0f} €")
+    print(f"Velka suhteessa BKT:hen: {last['state_debt_to_gdp']:.1%}")
+    print(f"Efektiivinen veroprosentti: {last['effective_tax_rate']:.1%}")
 
 
 if __name__ == "__main__":

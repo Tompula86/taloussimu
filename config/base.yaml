@@ -30,12 +30,23 @@ wages:
   initial: 2500.0
 
 taxes:
-  income_flat_rate: 0.25
+  # v0.8: Progressiivinen tuloverotus (kevennetty v0.8.1)
+  income_brackets:
+    - [0, 15000, 0.00]       # 0-15k: 0% (verovapaa)
+    - [15000, 30000, 0.10]   # 15k-30k: 10%
+    - [30000, 50000, 0.15]   # 30k-50k: 15%
+    - [50000, 999999, 0.20]  # 50k+: 20%
+  corporate_tax_rate: 0.10  # Laskettu 20% → 10%
   vat_rate: 0.24
+  capital_gains_rate: 0.30
 
 transfers:
   unemployment_benefit: 1200.0
   pension: 1500.0
+
+state:
+  debt_interest_rate_annual: 0.03
+  public_spending_share: 0.05  # 5% kassasta julkisiin hankintoihin (laskettu 15% → 5%)
 
 banking:
   deposit_rate_annual: 0.01

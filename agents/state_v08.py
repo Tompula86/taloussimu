@@ -79,13 +79,13 @@ class StateAgent(Agent):
                 self.income_tax_brackets.append((float(lower), float(upper), float(rate)))
         
         # Muut veroparametrit
-        self.corporate_tax_rate: float = float(taxes_cfg.get('corporate_tax_rate', 0.20))
+        self.corporate_tax_rate: float = float(taxes_cfg.get('corporate_rate', 0.20))
         self.vat_rate: float = float(taxes_cfg.get('vat_rate', self.model.vat_rate))
         self.capital_gains_rate: float = float(taxes_cfg.get('capital_gains_rate', 0.30))
         
         # Valtion parametrit
         state_cfg = getattr(self.model, '_config', {}).get('state', {})
-        self.debt_interest_rate_annual: float = float(state_cfg.get('debt_interest_rate_annual', 0.03))
+        self.debt_interest_rate_annual: float = float(state_cfg.get('debt_interest_rate', 0.03))
         self.public_spending_share: float = float(state_cfg.get('public_spending_share', 0.15))
         
         # Tulonsiirrot
@@ -242,14 +242,12 @@ class StateAgent(Agent):
         
         Simuloi valtion ostoja (terveydenhuolto, koulutus, infrastruktuuri).
         Palauttaa rahaa talouteen ja tukee yritysten kysyntää.
-        
-        Perustuu edellisen kuukauden ylijäämään (cash_balance).
         """
-        # Lasketaan ostobudjetti kassan perusteella
-        if self.cash_balance <= 0:
+        # Lasketaan ostobudjetti tulojen perusteella
+        if self.monthly_revenue <= 0:
             return
         
-        budget = self.cash_balance * self.public_spending_share
+        budget = self.monthly_revenue * self.public_spending_share
         
         if budget <= 0 or not self.model.firms:
             return

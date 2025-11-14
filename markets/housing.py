@@ -33,6 +33,7 @@ class Dwelling:
         self.size = size  # 1=yksiö, 2=kaksio, 3=kolmio, 4=neliö+
         self.base_value = base_value
         self.market_value = base_value  # Dynaaminen hinta
+        self.construction_cost = base_value  # v0.8: Alkuperäinen rakennuskustannus (myyntivoittoveroa varten)
         self.owner: HouseholdAgent | None = None
         self.for_sale = True
         self.construction_year = construction_year
@@ -229,7 +230,14 @@ class HousingMarket:
         # Jos ostaja myi vanhan asunnon
         if buyer.dwelling is not None:
             old_dwelling = buyer.dwelling
-            buyer.cash += old_dwelling.market_value  # Myyntitulo
+            sale_price = old_dwelling.market_value
+            buyer.cash += sale_price  # Myyntitulo
+            
+            # v0.8: Myyntivoittovero (jos voittoa)
+            if sale_price > old_dwelling.construction_cost:
+                capital_gain = sale_price - old_dwelling.construction_cost
+                self.model.state.collect_capital_gains_tax(buyer, capital_gain)
+            
             old_dwelling.owner = None
             old_dwelling.for_sale = True
         

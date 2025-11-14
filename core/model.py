@@ -26,6 +26,9 @@ class EconomyModel(Model):
     ) -> None:
         super().__init__(seed=seed)
 
+        # Tallenna config, jotta agentit voivat lukea sen
+        self._config = config
+
         self.month: int = 0
         self.total_consumption: float = 0.0  # Joka step resetoidaan
 
@@ -234,6 +237,20 @@ class EconomyModel(Model):
                 "dwellings_completed_per_month": lambda m: m.dwellings_completed_per_month,
                 "construction_sector_cash": lambda m: m.construction_sector_cash,
                 "avg_construction_profit_margin": lambda m: m.avg_construction_profit_margin,
+                # v0.8: Valtio-mittarit
+                "state_monthly_revenue": lambda m: m.state.monthly_revenue,
+                "state_monthly_expenses": lambda m: m.state.monthly_expenses,
+                "state_surplus": lambda m: m.state.monthly_surplus,
+                "state_total_debt": lambda m: m.state.total_debt,
+                "state_debt_to_gdp": lambda m: m.state.debt_to_gdp_ratio,
+                "state_income_tax": lambda m: m.state.income_tax_revenue,
+                "state_corporate_tax": lambda m: m.state.corporate_tax_revenue,
+                "state_vat": lambda m: m.state.vat_revenue,
+                "state_capital_gains_tax": lambda m: m.state.capital_gains_revenue,
+                "state_transfers": lambda m: m.state.transfer_expenses,
+                "state_debt_service": lambda m: m.state.debt_service_expenses,
+                "state_public_procurement": lambda m: m.state.public_procurement_expenses,
+                "effective_tax_rate": lambda m: m.state.effective_tax_rate,
             },
             agent_reporters={
                 "cash": "cash",
@@ -461,12 +478,13 @@ class EconomyModel(Model):
     
     @property
     def dwellings_completed_per_month(self) -> int:
-        """Valmistuneet asunnot kuukaudessa."""
+        """Valmistuneet asunnot kuukaudessa (v0.8.1: korjattu)."""
         if self.month == 0:
             return 0
         construction_firms = [f for f in self.firms if f.alive and f.firm_type == "construction"]
-        completed = sum(len([p for p in f.construction_projects if p.status == "completed" 
-                            and self.month - p.start_month <= 1])
+        # Laske projektit jotka valmistuivat TÄSSÄ kuukautta
+        completed = sum(len([p for p in f.construction_projects 
+                            if p.status == "completed" and p.completed_month == self.month])
                        for f in construction_firms)
         return completed
     
@@ -543,31 +561,58 @@ class EconomyModel(Model):
     def step(self) -> None:
         """Yksi kuukausi.
 
-        v0.4: Yksinkertaistettu - kulutus tapahtuu suoraan agenttien välillä.
+        v0.8: Uusi järjestys valtio-osalle:
         
-        1. Yritykset tuottavat, päivittävät hinnat ja maksavat palkat (brutto)
-        2. Valtio kerää tuloveron palkoista
-        3. Valtio maksaa tuet ja eläkkeet
-        4. Kotitaloudet kuluttavat ostamalla hyödykkeitä yrityksiltä dynaamiseen hintaan
-           (ALV kerätään ostohetkellä HouseholdAgent.consume():ssa)
-        5. Pankki hoitaa lainojen kassavirrat
+        1. Työmarkkinat (matching)
+        2. Yritykset tuottavat, päivittävät hinnat, nollaavat kirjanpidon
+        3. Yritykset maksavat palkat (→ kotitalouksille tuloja)
+        4. Valtio maksaa tulonsiirrot (→ työttömyystuki, eläkkeet)
+        5. Valtio kerää tuloverot (palkoista)
+        6. Kotitaloudet kuluttavat (→ ALV kerätään ostohetkellä)
+        7. Valtio kerää yritysverot (voitoista)
+        8. Valtio tekee julkisia hankintoja
+        9. Valtio laskee budjetin ja päivittää velan
+        10. Pankki hoitaa lainojen kassavirrat
+        11. Asuntomarkkina
+        12. Syntyvyys
         """
 
         self.month += 1
         self.total_consumption = 0.0
 
-        # v0.7: Työmarkkinat ennen valtiota ja palkanmaksua
+        # v0.7: Työmarkkinat ennen palkanmaksua
         self._run_labor_market()
-
-        # Järjestys: valtio → yritykset → kotitaloudet → pankki
-        self.state.step()
+        
+        # v0.8: Valtio nollaa kuukausittaiset laskurit
+        self.state.reset_monthly_counters()
+        
+        # v0.8: Valtio kerää yritysverot ENNEN kuin yritykset nollaavat kirjanpitonsa
+        # (Perustuu edellisen kuukauden revenue/expenses)
+        self.state.collect_corporate_tax()
+        
+        # v0.8: Yritykset step (nollaa kirjanpito, tuotanto, hinnoittelu, palkanmaksu)
         for firm in self.firms:
             firm.step()
+        
+        # v0.8: Valtio maksaa velanhoitokulut
+        self.state.pay_debt_interest()
+        
+        # v0.8: Valtio maksaa tulonsiirrot (työttömyystuki, eläkkeet)
+        self.state.pay_transfers()
+        
+        # v0.8: Valtio kerää tuloverot (palkoista)
+        self.state.collect_income_tax()
+        
+        # v0.8: Valtio tekee julkisia hankintoja (ENNEN kotitalouksien kulutusta)
+        # Perustuu EDELLISEN kuukauden tuloihin (jotka ovat state.cash_balance:ssa)
+        self.state.make_public_purchases()
+        
+        # Kotitaloudet kuluttavat (sisältää ALV-maksun)
         for hh in self.households:
             hh.step()
-
-        # v0.4: Kulutus ja ALV hoidetaan nyt HouseholdAgent.consume():ssa
-        # POISTETTU vanha kulutuksen jako-logiikka
+        
+        # v0.8: Valtio laskee budjetin ja päivittää velan
+        self.state.run_budget()
         
         # Pankki hoitaa lainojen kassavirrat kuukauden lopussa
         self.bank.step()
