@@ -297,3 +297,20 @@ class HousingMarket:
         dwelling.for_sale = True
         
         # Asunnon arvo siirtyy perinnöksi (hoidetaan HouseholdAgent.die():ssä)
+    
+    def avg_price_for_size(self, size: int) -> float:
+        """v0.7: Palauta keskihinta tietylle asuntokoolle.
+        
+        Args:
+            size: Asunnon koko (1-4)
+            
+        Returns:
+            Keskihinta tai 0 jos ei asuntoja
+        """
+        size_dwellings = [d for d in self.dwellings if d.size == size]
+        if not size_dwellings:
+            # Jos ei asuntoja, palauta arvio rakennuskustannuksen perusteella
+            base_value_multipliers = {1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5}
+            return self.construction_cost_base * base_value_multipliers.get(size, 1.0)
+        
+        return sum(d.market_value for d in size_dwellings) / len(size_dwellings)

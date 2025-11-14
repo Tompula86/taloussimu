@@ -64,6 +64,13 @@ def main() -> None:
     print(f"Konkursseja/kk (ka): {model_df['firm_deaths_per_month'].mean():.2f}")
     print(f"Yritysten keski-ikä: {last['avg_firm_age']:.1f} kk")
     print(f"Yrittäjien varallisuusosuus: {last['entrepreneur_wealth_share']:.1%}")
+    
+    print("\n=== Rakennusala (v0.7) ===")
+    print(f"Aktiivisia projekteja: {int(last['construction_projects_active'])}")
+    print(f"Rakennusalan työpaikat: {int(last['construction_employment'])}")
+    print(f"Valmistuneita asuntoja/kk (ka): {model_df['dwellings_completed_per_month'].mean():.2f}")
+    print(f"Rakennusliikkeiden kassa: {last['construction_sector_cash']:,.0f} €")
+    print(f"Keskimääräinen voittomarginaali: {last['avg_construction_profit_margin']:.1%}")
 
 
 if __name__ == "__main__":

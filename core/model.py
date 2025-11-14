@@ -86,8 +86,23 @@ class EconomyModel(Model):
         )
 
         # Luodaan yritykset
+        # v0.7: 1 rakennusliike + loput valmistajia
         self.firms: list[FirmAgent] = []
-        for i in range(n_firms):
+        
+        # Luo 1 rakennusliike
+        construction_firm = FirmAgent(
+            model=self,
+            wage_level=initial_wage * 1.1,  # Hieman korkeampi palkka rakennusalalla
+            investment_interval_months=0,  # Ei tavallisia investointeja
+            investment_loan_amount=0,
+            investment_loan_term=1,
+            investment_cash_buffer=0.0,
+            firm_type="construction",
+        )
+        self.firms.append(construction_firm)
+        
+        # Luo loput valmistajiksi
+        for i in range(n_firms - 1):
             firm = FirmAgent(
                 model=self,
                 wage_level=initial_wage,
@@ -95,6 +110,7 @@ class EconomyModel(Model):
                 investment_loan_amount=firm_investment_amount,
                 investment_loan_term=firm_investment_term,
                 investment_cash_buffer=firm_investment_cash_buffer,
+                firm_type="manufacturer",
             )
             self.firms.append(firm)
 
@@ -212,6 +228,12 @@ class EconomyModel(Model):
                 "avg_firm_age": lambda m: m.avg_firm_age,
                 "entrepreneur_wealth_share": lambda m: m.entrepreneur_wealth_share,
                 "num_active_firms": lambda m: m.num_active_firms,
+                # v0.7: Rakennusliike-mittarit
+                "construction_projects_active": lambda m: m.construction_projects_active,
+                "construction_employment": lambda m: m.construction_employment,
+                "dwellings_completed_per_month": lambda m: m.dwellings_completed_per_month,
+                "construction_sector_cash": lambda m: m.construction_sector_cash,
+                "avg_construction_profit_margin": lambda m: m.avg_construction_profit_margin,
             },
             agent_reporters={
                 "cash": "cash",
@@ -422,6 +444,59 @@ class EconomyModel(Model):
     def num_active_firms(self) -> int:
         """Toiminnassa olevien yritysten määrä."""
         return len([f for f in self.firms if f.alive])
+    
+    # v0.7: Rakennusliike-mittarit
+    @property
+    def construction_projects_active(self) -> int:
+        """Aktiivisten rakennusprojektien määrä."""
+        construction_firms = [f for f in self.firms if f.alive and f.firm_type == "construction"]
+        return sum(len([p for p in f.construction_projects if p.status == "ongoing"]) 
+                  for f in construction_firms)
+    
+    @property
+    def construction_employment(self) -> int:
+        """Rakennusalan työpaikat."""
+        construction_firms = [f for f in self.firms if f.alive and f.firm_type == "construction"]
+        return sum(len(f.employees) for f in construction_firms)
+    
+    @property
+    def dwellings_completed_per_month(self) -> int:
+        """Valmistuneet asunnot kuukaudessa."""
+        if self.month == 0:
+            return 0
+        construction_firms = [f for f in self.firms if f.alive and f.firm_type == "construction"]
+        completed = sum(len([p for p in f.construction_projects if p.status == "completed" 
+                            and self.month - p.start_month <= 1])
+                       for f in construction_firms)
+        return completed
+    
+    @property
+    def construction_sector_cash(self) -> float:
+        """Rakennusliikkeiden kassatilanne yhteensä."""
+        construction_firms = [f for f in self.firms if f.alive and f.firm_type == "construction"]
+        return sum(f.cash for f in construction_firms)
+    
+    @property
+    def avg_construction_profit_margin(self) -> float:
+        """Keskimääräinen rakennusalan voittomarginaali."""
+        construction_firms = [f for f in self.firms if f.alive and f.firm_type == "construction"]
+        if not construction_firms:
+            return 0.0
+        
+        # Laskee keskimääräisen marginaalin aktiivisista projekteista
+        # (arvioitu myyntihinta - käytetty budjetti) / käytetty budjetti
+        total_margin = 0.0
+        project_count = 0
+        
+        for firm in construction_firms:
+            for project in firm.construction_projects:
+                if project.spent_so_far > 0:
+                    estimated_revenue = self.housing_market.avg_price_for_size(project.dwelling_size)
+                    margin = (estimated_revenue - project.spent_so_far) / project.spent_so_far
+                    total_margin += margin
+                    project_count += 1
+        
+        return total_margin / project_count if project_count > 0 else 0.0
 
     # --- Syntyvyys ---
     def process_births(self) -> None:
@@ -511,15 +586,19 @@ class EconomyModel(Model):
 
         from agents.firm import FirmAgent  # vain tyyppiviitteeksi
 
-        # 1) Irtisanomiset ylityöllisistä firmoista
+        # 1) Päivitä kaikkien firmojen työvoimakysyntä ja palkkataso
+        for firm in self.firms:
+            if firm.alive:
+                firm._update_labor_demand()
+                firm._update_wage_level()
+        
+
+
+        # 2) Irtisanomiset ylityöllisistä firmoista
         unemployed_pool: list["HouseholdAgent"] = []
         for firm in self.firms:
             if not firm.alive:
                 continue
-
-            # Päivitä tavoitetyöntekijämäärä ja palkkataso
-            firm._update_labor_demand()
-            firm._update_wage_level()
 
             if len(firm.employees) > firm.target_employees:
                 num_to_fire = len(firm.employees) - firm.target_employees
@@ -532,14 +611,14 @@ class EconomyModel(Model):
                         firm.employees.remove(employee)
                     unemployed_pool.append(employee)
 
-        # 2) Kerää kaikki työttömät työnhakijat
+        # 3) Kerää kaikki työttömät työnhakijat
         for hh in self.households:
             if hh.alive and not hh.employed and hh not in unemployed_pool:
                 unemployed_pool.append(hh)
 
         self.random.shuffle(unemployed_pool)
 
-        # 3) Luo avoimet työpaikat firmojen target_employees-tavoitteiden perusteella
+        # 4) Luo avoimet työpaikat firmojen target_employees-tavoitteiden perusteella
         vacancies: list[tuple[FirmAgent, float]] = []
         for firm in self.firms:
             if not firm.alive:
@@ -551,7 +630,7 @@ class EconomyModel(Model):
         # Korkeapalkkaiset paikat täytetään ensin
         vacancies.sort(key=lambda x: x[1], reverse=True)
 
-        # 4) Matching: työttömät täyttävät avoimia paikkoja
+        # 5) Matching: työttömät täyttävät avoimia paikkoja
         for job_seeker in unemployed_pool:
             if not vacancies:
                 break
@@ -566,14 +645,15 @@ class EconomyModel(Model):
         
         1. Päivitä hinnat (segmentoituna kokojen mukaan)
         2. Suorita kaupankäynti
-        3. Harkitse uudisrakentamista
+        3. v0.7: Rakentaminen hoidetaan nyt construction-firmojen kautta
         """
         # Tallenna CPI kuukausittaista muutosta varten
         self.last_cpi = self.cpi
         
         self.housing_market.update_prices()
         self.housing_market.execute_transactions()
-        self.housing_market.consider_new_construction()
+        # v0.7: Poistettu - rakentaminen hoidetaan nyt firmojen kautta
+        # self.housing_market.consider_new_construction()
 
     def run_for_months(self, n_months: int) -> None:
         for _ in range(n_months):

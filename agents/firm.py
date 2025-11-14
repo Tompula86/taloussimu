@@ -1,6 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from mesa import Agent
+
+
+@dataclass
+class ConstructionProject:
+    """v0.7: Rakennusprojekti.
+    
+    Mallintaa yksittäisen asunnon rakentamisprosessia.
+    """
+    dwelling_size: int  # 1=yksiö, 2=kaksio, 3=kolmio, 4=neliö+
+    start_month: int  # Milloin projekti aloitettiin
+    duration_months: int  # Kuinka kauan rakentaminen kestää
+    total_budget: float  # Alkuperäinen budjetti
+    spent_so_far: float  # Paljonko on jo kulutettu
+    status: str  # "ongoing", "completed", "delayed"
+    workers_hired: int  # Montako työntekijää projektissa
+    monthly_wage_budget: float  # Palkkamenot per kuukausi
+    monthly_material_budget: float  # Materiaalikulut per kuukausi
+    dwelling_id: int | None = None  # Valmiin asunnon ID
 
 
 class FirmAgent(Agent):
@@ -21,11 +40,17 @@ class FirmAgent(Agent):
         investment_cash_buffer: float,
         owner=None,
         initial_equity: float = 0.0,
+        firm_type: str = "manufacturer",
     ) -> None:
         super().__init__(model)
+        # v0.7: Yrityksen tyyppi
+        self.firm_type: str = firm_type  # "manufacturer", "construction", "service"
+        
         # v0.7: Yrityksen tarjoama palkkataso työpaikoille
         self.wage_level = wage_level
-        self.cash: float = 0.0
+        # v0.7: Alkukassa palkanmaksuun ja käynnistykseen (6 kk palkkavaranto)
+        initial_payroll_reserve = wage_level * 35 * 6  # ~35 työntekijää × 6 kk
+        self.cash: float = initial_payroll_reserve if owner is None else initial_equity
         self.debt: float = 0.0
         self.capital_stock: float = 0.0
         self.investment_interval_months = max(0, investment_interval_months)
@@ -35,10 +60,10 @@ class FirmAgent(Agent):
         self.months_since_investment: int = 0
         
         # v0.4: Dynaaminen hinnoittelu ja varasto
-        self.price: float = 1.0  # Aloitushinta yhdelle tuotteelle
-        self.inventory: float = 100.0  # Aloitusvarasto
-        self.production_per_month: float = 20.0  # Paljonko tuotetaan kuussa
-        self.target_inventory: float = 100.0  # Tavoitevarasto
+        self.price: float = 30.0  # v0.7: Korkeampi aloitushinta (linkitetty palkkatasoon)
+        self.inventory: float = 0.0  # v0.7: Aloitusvarasto nolla, tuotanto alkaa heti
+        self.production_per_employee: float = 100.0  # v0.7: Työntekijäkohtainen tuotanto
+        self.target_inventory: float = 1000.0  # v0.7: Korkeampi tavoitevarasto
         
         # v0.6: Yrittäjyys ja konkurssit
         self.owner = owner  # Viite HouseholdAgent:iin (jos yrittäjäyritys)
@@ -49,9 +74,21 @@ class FirmAgent(Agent):
         # v0.7: Työvoima
         self.employees: list["HouseholdAgent"] = []
         self.target_employees: int = 0
+        
+        # v0.7: Rakennusliike-spesifit kentät
+        if self.firm_type == "construction":
+            self.construction_projects: list[ConstructionProject] = []
+            self.construction_cost_per_sqm: float = 2000.0
+            self.construction_duration_months: int = 12
+            self.target_profit_margin: float = 0.15  # 15%
+            self.max_concurrent_projects: int = 3
 
     def pay_wages(self) -> float:
-        """v0.7: Maksa palkat vain omille työntekijöille."""
+        """v0.7: Maksa palkat vain omille työntekijöille.
+        
+        Jos yritys ei pysty maksamaan palkkoja, se menee konkurssiin.
+        Tämä pakottaa yritykset tasapainottamaan työvoimansa tulojensa mukaan.
+        """
 
         total_wages = 0.0
         for employee in list(self.employees):
@@ -61,9 +98,10 @@ class FirmAgent(Agent):
                 employee.receive_income(wage)
                 total_wages += wage
             else:
-                # Maksukyvyttömyys palkoista → konkurssi
+                # Ei pysty maksamaan palkkoja → konkurssi
                 self._go_bankrupt()
-                break
+                return total_wages
+        
         return total_wages
 
     def receive_revenue(self, amount: float) -> None:
@@ -90,14 +128,17 @@ class FirmAgent(Agent):
         if not self.alive:
             return
         
-        # v0.7: Päivitä työvoimakysyntä ja palkkataso ennen tuotantoa
-        self._update_labor_demand()
-        self._update_wage_level()
-        
+        # v0.7: Työvoimapäätökset tehdään _run_labor_market():ssa ennen tätä
         self._produce()
         self._update_price()
         self._maybe_take_investment_loan()
         self.pay_wages()
+        
+        # v0.7: Rakennusliike-spesifi logiikka
+        if self.firm_type == "construction":
+            self._progress_construction_projects()
+            self._consider_new_construction_project()
+        
         self.check_bankruptcy()
 
     def _update_labor_demand(self) -> None:
@@ -116,8 +157,9 @@ class FirmAgent(Agent):
             self.wage_level *= 0.99
 
     def _produce(self) -> None:
-        """v0.4: Tuotanto lisää varastoa kuukausittain."""
-        self.inventory += self.production_per_month
+        """v0.7: Tuotanto skaalautuu työntekijämäärän mukaan."""
+        production = len(self.employees) * self.production_per_employee
+        self.inventory += production
 
     def _update_price(self) -> None:
         """v0.4: Yksinkertainen inventory targeting -hinnoittelusääntö.
@@ -206,3 +248,208 @@ class FirmAgent(Agent):
             # Varat menevät konkurssipesään, pankki saa osan
             recovery_value = max(0.0, self.cash + self.capital_stock + self.inventory * self.price)
             self.model.bank.handle_firm_bankruptcy(self, recovery_value)
+    
+    # v0.7: Rakennusliike-metodit
+    
+    def _consider_new_construction_project(self) -> None:
+        """Vaihe 1: Markkina-analyysi ja projektin aloitus."""
+        if self.firm_type != "construction":
+            return
+        
+        # Tarkista onko kapasiteettia uudelle projektille
+        if len(self.construction_projects) >= self.max_concurrent_projects:
+            return
+        
+        # Analysoi markkinoita: mitkä asunnot kannattavat
+        housing_market = self.model.housing_market
+        
+        best_size = None
+        best_margin = 0.0
+        
+        for size in [1, 2, 3, 4]:
+            # Laske keskihinta tälle koolle
+            avg_price = housing_market.avg_price_for_size(size)
+            if avg_price == 0:
+                continue
+            
+            # Arvioi rakennuskustannus (koko vaikuttaa neliömäärään)
+            sqm = 30 * size  # yksiö ~30m², kaksio ~60m², kolmio ~90m², neliö+ ~120m²
+            construction_cost = sqm * self.construction_cost_per_sqm
+            
+            # Laske potentiaalinen voittomarginaali
+            expected_margin = (avg_price - construction_cost) / construction_cost
+            
+            if expected_margin > best_margin:
+                best_margin = expected_margin
+                best_size = size
+        
+        # Kannattaako rakentaa? (tarvitaan vähintään tavoitemarginaali)
+        if best_size is None or best_margin < self.target_profit_margin:
+            return
+        
+        # Aloita uusi projekti
+        self._start_construction_project(best_size)
+    
+    def _start_construction_project(self, dwelling_size: int) -> None:
+        """Vaihe 2: Rahoitus ja projektin käynnistys."""
+        if self.firm_type != "construction":
+            return
+        
+        # Laske projektin budjetti
+        sqm = 30 * dwelling_size
+        total_cost = sqm * self.construction_cost_per_sqm
+        
+        # Jaa budjetti palkoiksi (50%) ja materiaaleiksi (50%)
+        monthly_wage = (total_cost * 0.5) / self.construction_duration_months
+        monthly_material = (total_cost * 0.5) / self.construction_duration_months
+        
+        # Tarvittavat työntekijät (oletetaan 3000€/kk palkka)
+        workers_needed = int(monthly_wage / 3000.0) + 1
+        
+        # Hae rakennuslaina pankilta
+        bank = getattr(self.model, "bank", None)
+        if bank is None or bank.stop_lending:
+            return
+        
+        # Tarkista onko yrityksellä tarpeeksi kassaa käynnistykseen (10% budjetista)
+        if self.cash < total_cost * 0.1:
+            return
+        
+        # Pyydä lainaa
+        loan_approved = bank.request_loan(
+            borrower=self,
+            amount=total_cost,
+            borrower_type="firm",
+            term_months=self.construction_duration_months + 12,  # +1v lyhennyksille
+            purpose="construction",
+        )
+        
+        if not loan_approved:
+            return
+        
+        # Luo uusi projekti
+        project = ConstructionProject(
+            dwelling_size=dwelling_size,
+            start_month=self.model.month,
+            duration_months=self.construction_duration_months,
+            total_budget=total_cost,
+            spent_so_far=0.0,
+            status="ongoing",
+            workers_hired=workers_needed,
+            monthly_wage_budget=monthly_wage,
+            monthly_material_budget=monthly_material,
+        )
+        
+        self.construction_projects.append(project)
+    
+    def _progress_construction_projects(self) -> None:
+        """Vaihe 3: Rakennusvaihe - kuukausittaiset kulut."""
+        if self.firm_type != "construction":
+            return
+        
+        for project in list(self.construction_projects):
+            if project.status != "ongoing":
+                continue
+            
+            # Tarkista onko projekti valmis
+            months_elapsed = self.model.month - project.start_month
+            if months_elapsed >= project.duration_months:
+                self._complete_construction_project(project)
+                continue
+            
+            # Maksa kuukausittaiset kulut
+            monthly_cost = project.monthly_wage_budget + project.monthly_material_budget
+            
+            if self.cash >= monthly_cost:
+                # Palkat: Luo työpaikkoja (v0.7: hoidetaan _run_labor_market():ssa)
+                # Tässä vain kirjataan kulut
+                self.cash -= project.monthly_wage_budget
+                project.spent_so_far += project.monthly_wage_budget
+                
+                # Materiaalit: Ostetaan muilta yrityksiltä
+                self._buy_construction_materials(project.monthly_material_budget)
+                project.spent_so_far += project.monthly_material_budget
+            else:
+                # Ei rahaa → projekti viivästyy
+                project.status = "delayed"
+    
+    def _buy_construction_materials(self, amount: float) -> None:
+        """Osta rakennusmateriaaleja muilta yrityksiltä."""
+        if amount <= 0:
+            return
+        
+        # Jaa ostot tasaisesti kaikkien manufacturer-yritysten kesken
+        manufacturers = [
+            f for f in self.model.firms
+            if f.alive and f.firm_type == "manufacturer"
+        ]
+        
+        if not manufacturers:
+            # Jos ei muita yrityksiä, raha vain katoaa (yksinkertaistus)
+            self.cash -= amount
+            return
+        
+        per_firm = amount / len(manufacturers)
+        
+        for firm in manufacturers:
+            # Osta hyödykkeitä firmalta
+            units = per_firm / firm.price
+            firm.sell_goods(units)
+    
+    def _complete_construction_project(self, project: ConstructionProject) -> None:
+        """Vaihe 4: Valmistuminen - luo uusi asunto."""
+        if self.firm_type != "construction":
+            return
+        
+        # Luo uusi Dwelling asuntomarkkinalle
+        from markets.housing import Dwelling
+        
+        housing_market = self.model.housing_market
+        
+        # Laske asunnon perusarvo koon mukaan
+        base_value_multipliers = {1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5}
+        base_value = housing_market.construction_cost_base * base_value_multipliers[project.dwelling_size]
+        
+        new_dwelling = Dwelling(
+            dwelling_id=housing_market.next_id,
+            size=project.dwelling_size,
+            base_value=base_value,
+            construction_year=self.model.month,
+        )
+        
+        # Aseta markkinahinta nykyisen hintatason mukaan
+        new_dwelling.market_value = housing_market.avg_price_for_size(project.dwelling_size)
+        
+        # Lisää asuntomarkkinalle ja aseta myyntiin
+        housing_market.dwellings.append(new_dwelling)
+        housing_market.next_id += 1
+        new_dwelling.for_sale = True
+        
+        # Tallennetaan dwelling_id projektiin myyntiä varten
+        project.dwelling_id = new_dwelling.id
+        project.status = "completed"
+        
+        # Yritä myydä asunto heti (v0.7: yksinkertaistus)
+        self._try_sell_completed_dwelling(project, new_dwelling)
+    
+    def _try_sell_completed_dwelling(self, project: ConstructionProject, dwelling) -> None:
+        """Vaihe 5: Myynti ja tuloslaskelma."""
+        # Odotetaan että asuntomarkkina hoitaa myynnin
+        # Tässä yksinkertaistetussa versiossa kirjataan vain projekti valmiiksi
+        # Todellinen myynti tapahtuu housing_market.execute_transactions():ssa
+        
+        # Poista projekti listalta
+        if project in self.construction_projects:
+            self.construction_projects.remove(project)
+        
+        # Kun asunto myydään, ostaja maksaa market_value:n
+        # Tulo tulee asunnon omistajalle (tässä tapauksessa rakennusliikkeelle aluksi)
+        # HUOM: v0.7:ssä yksinkertaistamme että asunto myydään heti markkinahintaan
+        revenue = dwelling.market_value
+        profit = revenue - project.spent_so_far
+        
+        # Lisää tulo kassaan
+        self.cash += revenue
+        
+        # Maksa laina pois (jos mahdollista)
+        # Pankki hoitaa velanhoitokulut automaattisesti step():ssä

@@ -79,14 +79,15 @@ Testit varmistavat pankkijärjestelmän velanhoitologiikan ja M1≈luottokanta -
 ## Versiot (roadmap)
 
 - **v0.1** ✅ – Perussykli: kotitaloudet, yritykset, valtio; palkat, verot, kulutus
-- **v0.2** 🔄 – Elinkaari, taseet, perinnöt
-- **v0.3** – Pankit ja endogeeninen raha
-- **v0.4** – Asuntomarkkina ja asuntolainat
-- **v0.5** – Yrittäjyys ja konkurssit
-- **v0.6** – Realistisempi verotus ja budjetti
-- **v0.7** – Kattava mittaripaketti ja validointi
-- **v0.8** – Rahoitusmarkkinoiden LOB-mikrorakenne
-- **v0.9** – Kalibrointi ja herkkyysanalyysi
+- **v0.2** ✅ – Elinkaari, taseet, perinnöt
+- **v0.3** ✅ – Pankit ja endogeeninen raha (luottokannan kasvu)
+- **v0.4** ✅ – Dynaaminen hinnoittelu ja varasto
+- **v0.5** ✅ – Asuntomarkkina ja asuntolainat
+- **v0.6** ✅ – Yrittäjyys ja konkurssit
+- **v0.7** ✅ – **Työmarkkinareformi: Dynaaminen työllistäminen ja realistinen työttömyys**
+- **v0.8** 🔄 – Taitotasot, koulutus ja palkkahajonnat
+- **v0.9** – Rahoitusmarkkinoiden LOB-mikrorakenne
+- **v1.0** – Kalibrointi, validointi ja julkaisu
 
 Katso `roadmap.md` ja `suunnitelma.md` lisätietoja varten.
 
