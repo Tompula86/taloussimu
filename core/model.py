@@ -121,6 +121,20 @@ class EconomyModel(Model):
             )
             self.households.append(household)
 
+        # v0.7: Alusta työllisyys jakamalla työikäiset kotitaloudet tasaisesti firmoille
+        if self.firms:
+            for i, hh in enumerate(self.households):
+                if hh.age < self.retirement_age and hh.alive:
+                    firm = self.firms[i % len(self.firms)]
+                    hh.employed = True
+                    hh.employer = firm
+                    hh.wage = firm.wage_level
+                    firm.employees.append(hh)
+
+            # Aseta tavoitetyöntekijämäärät alkuperäisen tilanteen mukaan
+            for firm in self.firms:
+                firm.target_employees = len(firm.employees)
+
         # Luodaan pankki, joka hallinnoi luottoja ja talletuksia
         self.bank: BankAgent = BankAgent(
             model=self,
@@ -467,6 +481,9 @@ class EconomyModel(Model):
         self.month += 1
         self.total_consumption = 0.0
 
+        # v0.7: Työmarkkinat ennen valtiota ja palkanmaksua
+        self._run_labor_market()
+
         # Järjestys: valtio → yritykset → kotitaloudet → pankki
         self.state.step()
         for firm in self.firms:
@@ -488,6 +505,61 @@ class EconomyModel(Model):
 
         # Kerätään data tämän kuukauden lopussa
         self.datacollector.collect(self)
+
+    def _run_labor_market(self) -> None:
+        """v0.7: Orkestroi työmarkkinoiden irtisanomiset ja rekrytoinnit."""
+
+        from agents.firm import FirmAgent  # vain tyyppiviitteeksi
+
+        # 1) Irtisanomiset ylityöllisistä firmoista
+        unemployed_pool: list["HouseholdAgent"] = []
+        for firm in self.firms:
+            if not firm.alive:
+                continue
+
+            # Päivitä tavoitetyöntekijämäärä ja palkkataso
+            firm._update_labor_demand()
+            firm._update_wage_level()
+
+            if len(firm.employees) > firm.target_employees:
+                num_to_fire = len(firm.employees) - firm.target_employees
+                if num_to_fire <= 0:
+                    continue
+                fired = self.random.sample(firm.employees, num_to_fire)
+                for employee in fired:
+                    employee.lose_job()
+                    if employee in firm.employees:
+                        firm.employees.remove(employee)
+                    unemployed_pool.append(employee)
+
+        # 2) Kerää kaikki työttömät työnhakijat
+        for hh in self.households:
+            if hh.alive and not hh.employed and hh not in unemployed_pool:
+                unemployed_pool.append(hh)
+
+        self.random.shuffle(unemployed_pool)
+
+        # 3) Luo avoimet työpaikat firmojen target_employees-tavoitteiden perusteella
+        vacancies: list[tuple[FirmAgent, float]] = []
+        for firm in self.firms:
+            if not firm.alive:
+                continue
+            num_vacancies = firm.target_employees - len(firm.employees)
+            for _ in range(max(0, num_vacancies)):
+                vacancies.append((firm, firm.wage_level))
+
+        # Korkeapalkkaiset paikat täytetään ensin
+        vacancies.sort(key=lambda x: x[1], reverse=True)
+
+        # 4) Matching: työttömät täyttävät avoimia paikkoja
+        for job_seeker in unemployed_pool:
+            if not vacancies:
+                break
+            firm, wage = vacancies.pop(0)
+            job_seeker.employed = True
+            job_seeker.employer = firm
+            job_seeker.wage = wage
+            firm.employees.append(job_seeker)
     
     def housing_market_step(self) -> None:
         """v0.5: Asuntomarkkinan kuukausittainen päivitys.

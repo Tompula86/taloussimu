@@ -29,7 +29,8 @@ class HouseholdAgent(Agent):
         super().__init__(model)
         self.model: EconomyModel = model
         self.age: int = age
-        self.employed: bool = age < model.retirement_age
+        # v0.7: Työllisyys ja palkka määräytyvät työmarkkinan kautta, eivät iän mukaan
+        self.employed: bool = False
         self.alive: bool = True
 
         # Tase (v0.2: yksinkertainen versio)
@@ -47,6 +48,8 @@ class HouseholdAgent(Agent):
         self.num_children: int = 0  # Lasten määrä
         self.dwelling: Dwelling | None = None  # Viite Dwelling-objektiin (markets.housing) tai None
         self.employer: FirmAgent | None = None  # Viite FirmAgent:iin (työnantaja)
+        # v0.7: Henkilökohtainen palkkataso työnantajalta
+        self.wage: float = 0.0
 
         self.base_propensity_to_consume: float = propensity
         self.debt_service_reserve: float = 0.0
@@ -137,13 +140,9 @@ class HouseholdAgent(Agent):
         return payment
 
     def expected_monthly_income(self) -> float:
-        # v0.3 yksinkertainen arvio: palkkataso työllisillä, muuten työttömyystuki
+        """v0.7: Odotettu kuukausitulo perustuu omaan palkkaan tai työttömyystukeen."""
         if self.employed:
-            # v0.6: Valitse ensimmäinen elossa oleva yritys, tai palaa työttömyysturvaan
-            alive_firms = [f for f in self.model.firms if f.alive]
-            if alive_firms:
-                return alive_firms[0].wage_level
-            return self.model.unemployment_benefit
+            return self.wage
         return self.model.unemployment_benefit
 
     @property
@@ -222,6 +221,12 @@ class HouseholdAgent(Agent):
         self.business_equity = 0.0
         self.debt = 0.0
         self.dwelling = None
+
+    def lose_job(self) -> None:
+        """v0.7: Menetä työpaikka ja nollaa palkka."""
+        self.employed = False
+        self.employer = None
+        self.wage = 0.0
 
     def check_leaving_home(self) -> None:
         """v0.5: Tarkista, muuttaako joku lapsista pois kotoa.
@@ -397,8 +402,3 @@ class HouseholdAgent(Agent):
             self.business_equity = 0.0
             self.owned_firm = None
             self.entrepreneur = False
-    
-    def lose_job(self) -> None:
-        """v0.6: Menetä työpaikka (esim. yrityksen konkurssin takia)."""
-        self.employed = False
-        self.employer = None

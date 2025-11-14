@@ -23,6 +23,7 @@ class FirmAgent(Agent):
         initial_equity: float = 0.0,
     ) -> None:
         super().__init__(model)
+        # v0.7: Yrityksen tarjoama palkkataso työpaikoille
         self.wage_level = wage_level
         self.cash: float = 0.0
         self.debt: float = 0.0
@@ -45,31 +46,24 @@ class FirmAgent(Agent):
         self.alive: bool = True  # Onko yritys toiminnassa
         self.founded_month: int = model.month  # Milloin perustettu
         self.is_startup: bool = owner is not None  # Onko uusi yrittäjäyritys
+        # v0.7: Työvoima
+        self.employees: list["HouseholdAgent"] = []
+        self.target_employees: int = 0
 
     def pay_wages(self) -> float:
-        """Maksetaan palkat yksinkertaiselle osalle kotitalouksista.
-
-        v0.1: jokaiselle kotitaloudelle sama palkka.
-        Palauttaa maksettujen palkkojen summan.
-        """
+        """v0.7: Maksa palkat vain omille työntekijöille."""
 
         total_wages = 0.0
-        for hh in self.model.households:
-            # v0.1: kaikki kotitaloudet ovat työllisiä
-            hh.receive_income(self.wage_level)
-            total_wages += self.wage_level
-
-        shortfall = max(0.0, total_wages - self.cash)
-        if shortfall > 0 and hasattr(self.model, "bank"):
-            self.model.bank.request_loan(
-                borrower=self,
-                amount=shortfall,
-                borrower_type="firm",
-                term_months=12,
-                purpose="payroll_bridge",
-            )
-
-        self.cash -= total_wages
+        for employee in list(self.employees):
+            wage = getattr(employee, "wage", self.wage_level)
+            if self.cash >= wage:
+                self.cash -= wage
+                employee.receive_income(wage)
+                total_wages += wage
+            else:
+                # Maksukyvyttömyys palkoista → konkurssi
+                self._go_bankrupt()
+                break
         return total_wages
 
     def receive_revenue(self, amount: float) -> None:
@@ -96,11 +90,30 @@ class FirmAgent(Agent):
         if not self.alive:
             return
         
+        # v0.7: Päivitä työvoimakysyntä ja palkkataso ennen tuotantoa
+        self._update_labor_demand()
+        self._update_wage_level()
+        
         self._produce()
         self._update_price()
         self._maybe_take_investment_loan()
         self.pay_wages()
         self.check_bankruptcy()
+
+    def _update_labor_demand(self) -> None:
+        """v0.7: Päivitä tavoitetyöntekijämäärä varastotilanteen mukaan."""
+        if self.inventory < self.target_inventory * 0.8:
+            self.target_employees += 1
+        elif self.inventory > self.target_inventory * 1.2:
+            self.target_employees = max(0, self.target_employees - 1)
+
+    def _update_wage_level(self) -> None:
+        """v0.7: Säädä tarjottavaa palkkatasoa työttömyysasteen mukaan."""
+        unemployment = getattr(self.model, "unemployment_rate", 0.0)
+        if unemployment < 0.05:
+            self.wage_level *= 1.01
+        elif unemployment > 0.10:
+            self.wage_level *= 0.99
 
     def _produce(self) -> None:
         """v0.4: Tuotanto lisää varastoa kuukausittain."""
@@ -183,11 +196,10 @@ class FirmAgent(Agent):
         if self.owner is not None:
             self.owner.handle_business_bankruptcy(self)
         
-        # Vapauta työntekijät
-        if hasattr(self.model, "households"):
-            for household in self.model.households:
-                if household.employer == self:
-                    household.lose_job()
+        # v0.7: Vapauta omat työntekijät tehokkaasti
+        for employee in list(self.employees):
+            employee.lose_job()
+        self.employees.clear()
         
         # Pankki kirjaa tappion (yrityksen varat ei riitä velkaan)
         if hasattr(self.model, "bank"):
