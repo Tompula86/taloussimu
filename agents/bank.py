@@ -93,7 +93,7 @@ class BankAgent(Agent):
         if term_months <= 0:
             term_months = 12
 
-        if not self._can_lend(amount, borrower, borrower_type, term_months):
+        if not self._can_lend(amount, borrower, borrower_type, term_months, purpose):
             return False
 
         rate = self._loan_rate_for(borrower_type)
@@ -228,6 +228,7 @@ class BankAgent(Agent):
         borrower: Any,
         borrower_type: str,
         term_months: int,
+        purpose: str = "general",
     ) -> bool:
         if self.stop_lending:
             return False
@@ -244,6 +245,12 @@ class BankAgent(Agent):
             income = getattr(borrower, "expected_monthly_income", lambda: 0.0)()
             if income <= 0:
                 return False
+            
+            # v0.5: Asuntolainan erityiskriterit
+            if purpose == "mortgage":
+                return self._can_approve_mortgage(amount, borrower, income, term_months)
+            
+            # Kulutusluotto ja muut lainat
             max_by_income = self.max_loan_to_income * income * 12.0
             if borrower.debt + amount > max_by_income:
                 return False
@@ -252,8 +259,98 @@ class BankAgent(Agent):
             payment = self._annuity_payment(amount, monthly_rate, term_months)
             if payment > self.max_debt_service_ratio * income:
                 return False
+        
+        # v0.6: Yritysluotot - tiukemmat kriteerit startup-yrityksille
+        elif borrower_type == "firm":
+            if purpose == "startup":
+                return self._can_approve_startup_loan(amount, borrower, term_months)
 
         return not self._liquidity_stressed()
+    
+    def _can_approve_mortgage(
+        self,
+        loan_amount: float,
+        borrower: Any,
+        monthly_income: float,
+        term_months: int,
+    ) -> bool:
+        """v0.5: Asuntolainan hyväksyntäkriteerit.
+        
+        LTV (Loan-to-Value): max 85%
+        LTI (Loan-to-Income): max 4.5x vuositulot
+        Stressitesti: korko + 2%, max 35% tuloista
+        """
+        # Tässä vaiheessa dwelling on jo valittu HousingMarket._try_purchase():ssa
+        # ja loan_amount on dwelling.market_value - käsiraha
+        
+        # LTI-raja: max 4.5x vuositulot
+        annual_income = monthly_income * 12
+        max_loan_by_lti = annual_income * 4.5
+        if loan_amount > max_loan_by_lti:
+            return False
+        
+        # Stressitesti: korko + 2%, max 35% tuloista
+        stressed_rate = (self._loan_rate_for("household") + 0.02) / 12.0
+        monthly_payment = self._annuity_payment(loan_amount, stressed_rate, term_months)
+        max_payment = monthly_income * 0.35
+        
+        if monthly_payment > max_payment:
+            return False
+        
+        return True
+    
+    def _can_approve_startup_loan(
+        self,
+        loan_amount: float,
+        borrower: Any,
+        term_months: int,
+    ) -> bool:
+        """v0.6: Startup-yritysluoton hyväksyntäkriteerit.
+        
+        Tiukemmat kriteerit kuin vakiintuneille yrityksille:
+        - Vaatii omistajan oman pääoman sijoitusta (equity)
+        - Korkeampi korko (firm_spread + startup premium)
+        - Lainamäärä max 3x equity
+        """
+        # Vaadi että yrityksellä on omaa pääomaa
+        firm_equity = getattr(borrower, 'equity', 0.0)
+        if firm_equity <= 0:
+            return False
+        
+        # Laina max 3x equity (debt-to-equity < 3)
+        if loan_amount > firm_equity * 3.0:
+            return False
+        
+        return True
+    
+    def handle_firm_bankruptcy(self, firm: Any, recovery_value: float) -> None:
+        """v0.6: Käsittele yrityksen konkurssi pankin näkökulmasta.
+        
+        Args:
+            firm: Konkurssiin mennyt yritys
+            recovery_value: Konkurssipesän arvo (varat)
+        """
+        # Etsi yrityksen lainat
+        firm_loans = [loan for loan in self.loans if loan.borrower == firm and loan.status == "active"]
+        
+        for loan in firm_loans:
+            balance = loan.balance
+            # Recovery jakautuu suhteellisesti velkojien kesken (tässä vain pankki)
+            recovery = min(recovery_value, balance)
+            loss = balance - recovery
+            
+            # Päivitä pankin tase
+            self.total_loans = max(0.0, self.total_loans - balance)
+            self.cash_reserves += recovery
+            self.equity -= loss
+            self.total_defaulted += loss
+            
+            # Merkitse laina epäsuoriutuneeksi
+            loan.balance = 0.0
+            loan.remaining_term = 0
+            loan.status = "defaulted"
+        
+        self._update_loan_metrics()
 
     def _liquidity_stressed(self) -> bool:
         if self.deposit_rate_monthly <= 0:

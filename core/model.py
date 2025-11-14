@@ -102,11 +102,22 @@ class EconomyModel(Model):
         self.households: list[HouseholdAgent] = []
         for i in range(n_households):
             age = self.random.randint(initial_age_min, initial_age_max)
+            # v0.5: Alustetaan household_size realistisesti iän mukaan
+            if age < 25:
+                household_size = 1  # Nuoret yksin
+            elif age < 35:
+                household_size = self.random.choice([1, 2, 2])  # Pääosin pareja
+            elif age < 50:
+                household_size = self.random.choice([2, 3, 4, 4])  # Perheitä
+            else:
+                household_size = self.random.choice([1, 2, 2])  # Vanhemmat pareja tai yksin
+            
             household = HouseholdAgent(
                 model=self,
                 age=age,
                 initial_cash=initial_cash,
                 propensity=propensity_to_consume,
+                household_size=household_size,
             )
             self.households.append(household)
 
@@ -115,10 +126,43 @@ class EconomyModel(Model):
             model=self,
             config=banking_cfg,
         )
+        
+        # v0.5: Luodaan asuntomarkkina
+        from markets.housing import HousingMarket
+        housing_cfg = config.get("housing", {})
+        self.leaving_home_rate_per_month: float = float(
+            housing_cfg.get("leaving_home_rate_per_month", 0.01)
+        )
+        self.housing_market = HousingMarket(model=self)
+        
+        # v0.6: Yrittäjyys-konfiguraatio
+        entrepreneurship_cfg = config.get("entrepreneurship", {})
+        self.entrepreneurship_rate_per_month: float = float(
+            entrepreneurship_cfg.get("rate_per_month", 0.001)
+        )
+        self.firm_seed_capital: float = float(
+            entrepreneurship_cfg.get("firm_seed_capital", 10000.0)
+        )
+        self.entrepreneur_cash_buffer: float = float(
+            entrepreneurship_cfg.get("entrepreneur_cash_buffer", 5000.0)
+        )
+        self.startup_business_loan: float = float(
+            entrepreneurship_cfg.get("startup_business_loan", 30000.0)
+        )
+        # Alusta asuntokanta (oletuksena 80% kotitalouksista)
+        initial_dwellings = int(n_households * 0.8)
+        self.housing_market.initialize_housing_stock(initial_dwellings)
+        # Tallenna CPI-pohja asuntohintojen inflaatio-linkitykselle
+        self.cpi_base = 1.0
+        self.last_cpi = 1.0
+        
+        # Alusta osa kotitalouksista asunnonomistajiksi (60% omistusaste)
+        self._initialize_housing_ownership()
 
         self.datacollector = DataCollector(
             model_reporters={
                 "month": lambda m: m.month,
+                "cpi": lambda m: m.cpi,  # v0.4: UUSI - Consumer Price Index
                 "unemployment_rate": lambda m: m.unemployment_rate,
                 "state_balance": lambda m: m.state_balance,
                 "total_consumption": lambda m: m.total_consumption,
@@ -137,6 +181,23 @@ class EconomyModel(Model):
                 "bank_investment_loan_share": lambda m: m.bank_investment_loan_share,
                 "bank_nonperforming_balance": lambda m: m.bank_nonperforming_balance,
                 "bank_avg_active_loan_age": lambda m: m.bank_avg_active_loan_age,
+                # v0.5: Asuntomarkkina-mittarit
+                "avg_household_size": lambda m: m.avg_household_size,
+                "residents_per_dwelling": lambda m: m.residents_per_dwelling,
+                "housing_ownership_rate": lambda m: m.housing_ownership_rate,
+                "avg_house_price": lambda m: m.avg_house_price,
+                "avg_house_price_size_1": lambda m: m.avg_house_price_by_size(1),
+                "avg_house_price_size_2": lambda m: m.avg_house_price_by_size(2),
+                "avg_house_price_size_3": lambda m: m.avg_house_price_by_size(3),
+                "avg_house_price_size_4": lambda m: m.avg_house_price_by_size(4),
+                "housing_transactions": lambda m: m.housing_market.monthly_transactions,
+                # v0.6: Yrittäjyys-mittarit
+                "entrepreneurship_rate": lambda m: m.entrepreneurship_rate,
+                "firm_births_per_month": lambda m: m.firm_births_per_month,
+                "firm_deaths_per_month": lambda m: m.firm_deaths_per_month,
+                "avg_firm_age": lambda m: m.avg_firm_age,
+                "entrepreneur_wealth_share": lambda m: m.entrepreneur_wealth_share,
+                "num_active_firms": lambda m: m.num_active_firms,
             },
             agent_reporters={
                 "cash": "cash",
@@ -144,10 +205,52 @@ class EconomyModel(Model):
                 "age": lambda a: getattr(a, "age", None),
                 "alive": lambda a: getattr(a, "alive", None),
                 "employed": lambda a: getattr(a, "employed", None),
+                "household_size": lambda a: getattr(a, "household_size", None),
             },
         )
 
+    def _initialize_housing_ownership(self) -> None:
+        """v0.5: Alusta osa kotitalouksista asunnonomistajiksi.
+        
+        Jaa asunnot kotitalouksille koon mukaan sopivasti.
+        """
+        # Järjestä kotitaloudet household_size mukaan (isoimmat ensin)
+        sorted_households = sorted(
+            [h for h in self.households if h.alive],
+            key=lambda h: h.household_size,
+            reverse=True,
+        )
+        
+        # Järjestä asunnot koon mukaan (isoimmat ensin)
+        sorted_dwellings = sorted(
+            self.housing_market.dwellings,
+            key=lambda d: d.size,
+            reverse=True,
+        )
+        
+        # Jaa asunnot kotitalouksille (60% saa asunnon)
+        target_owners = int(len(sorted_households) * 0.6)
+        for i, household in enumerate(sorted_households[:target_owners]):
+            if i >= len(sorted_dwellings):
+                break
+            
+            dwelling = sorted_dwellings[i]
+            dwelling.owner = household
+            dwelling.for_sale = False
+            household.dwelling = dwelling
+            # Ei velkaa alussa
+    
     # --- Johdetut suureet ---
+    @property
+    def cpi(self) -> float:
+        """v0.4: Consumer Price Index = yritysten hintojen keskiarvo.
+        
+        Mahdollistaa inflaation/deflaation seurannan.
+        """
+        if not self.firms:
+            return 1.0
+        return sum(f.price for f in self.firms) / len(self.firms)
+
     @property
     def unemployment_rate(self) -> float:
         households = [h for h in self.households]
@@ -210,13 +313,109 @@ class EconomyModel(Model):
     @property
     def bank_avg_active_loan_age(self) -> float:
         return self.bank.loan_metrics.get("avg_active_age", 0.0)
+    
+    # v0.5: Asuntomarkkina-mittarit
+    @property
+    def avg_household_size(self) -> float:
+        """Kotitalouden keskikoko."""
+        alive = [h for h in self.households if h.alive]
+        if not alive:
+            return 0.0
+        return sum(h.household_size for h in alive) / len(alive)
+    
+    @property
+    def residents_per_dwelling(self) -> float:
+        """Asukasta per asunto - vastaa käyttäjän kysymykseen!"""
+        if not self.housing_market.dwellings:
+            return 0.0
+        total_residents = sum(h.household_size for h in self.households if h.alive)
+        return total_residents / len(self.housing_market.dwellings)
+    
+    @property
+    def housing_ownership_rate(self) -> float:
+        """Omistusasumisen aste."""
+        alive = [h for h in self.households if h.alive]
+        if not alive:
+            return 0.0
+        owners = len([h for h in alive if h.dwelling is not None])
+        return owners / len(alive)
+    
+    @property
+    def avg_house_price(self) -> float:
+        """Asuntojen keskihinta."""
+        if not self.housing_market.dwellings:
+            return 0.0
+        return sum(d.market_value for d in self.housing_market.dwellings) / len(self.housing_market.dwellings)
+    
+    def avg_house_price_by_size(self, size: int) -> float:
+        """Asuntojen keskihinta koon mukaan."""
+        size_dwellings = [d for d in self.housing_market.dwellings if d.size == size]
+        if not size_dwellings:
+            return 0.0
+        return sum(d.market_value for d in size_dwellings) / len(size_dwellings)
+    
+    # v0.6: Yrittäjyys-mittarit
+    @property
+    def entrepreneurship_rate(self) -> float:
+        """Yrittäjien osuus työvoimasta."""
+        alive = [h for h in self.households if h.alive]
+        if not alive:
+            return 0.0
+        entrepreneurs = len([h for h in alive if h.entrepreneur])
+        return entrepreneurs / len(alive)
+    
+    @property
+    def firm_births_per_month(self) -> float:
+        """Uusien yritysten määrä kuukaudessa."""
+        if self.month == 0:
+            return 0.0
+        recent_startups = len([f for f in self.firms if f.is_startup and f.alive and self.month - f.founded_month <= 1])
+        return recent_startups
+    
+    @property
+    def firm_deaths_per_month(self) -> float:
+        """Konkurssien määrä kuukaudessa."""
+        if self.month == 0:
+            return 0.0
+        # Pysyvä laskuri tarvittaisiin - tämä on tilannekuva
+        dead_firms = len([f for f in self.firms if not f.alive])
+        return dead_firms / max(1, self.month)
+    
+    @property
+    def avg_firm_age(self) -> float:
+        """Yritysten keski-ikä kuukausissa."""
+        alive_firms = [f for f in self.firms if f.alive]
+        if not alive_firms:
+            return 0.0
+        ages = [max(0, self.month - f.founded_month) for f in alive_firms]
+        return sum(ages) / len(ages) if ages else 0.0
+    
+    @property
+    def entrepreneur_wealth_share(self) -> float:
+        """Yrittäjien osuus kokonaisvarallisuudesta."""
+        alive = [h for h in self.households if h.alive]
+        if not alive:
+            return 0.0
+        
+        total_wealth = sum(h.net_worth for h in alive)
+        if total_wealth <= 0:
+            return 0.0
+        
+        entrepreneur_wealth = sum(h.net_worth for h in alive if h.entrepreneur)
+        return entrepreneur_wealth / total_wealth
+    
+    @property
+    def num_active_firms(self) -> int:
+        """Toiminnassa olevien yritysten määrä."""
+        return len([f for f in self.firms if f.alive])
 
     # --- Syntyvyys ---
     def process_births(self) -> None:
-        """Käsittele syntyvyys kuukausittain.
+        """v0.5: Käsittele syntyvyys kasvattamalla perheen kokoa.
         
-        Syntyvyysaste voi olla vakio tai dynaaminen (tulevissa versioissa).
-        Lasketaan hedelmällisessä iässä olevat agentit ja synnytetään uusia.
+        Lapsi EI ole erillinen agentti syntymästä, vaan kasvattaa
+        vanhemman household_size ja num_children -lukuja.
+        Lapsi "aktivoituu" agentiksi vasta check_leaving_home():ssa.
         """
         living_households = [h for h in self.households if h.alive]
         fertile_households = [
@@ -231,20 +430,14 @@ class EconomyModel(Model):
         monthly_birth_prob = self.birth_rate_per_year / 12
         
         # Dynaaminen syntyvyys (jos halutaan säätää ajan mukaan)
-        # Esim. voidaan lisätä: monthly_birth_prob *= self.birth_rate_multiplier()
+        monthly_birth_prob *= self.birth_rate_multiplier()
         
         for parent in fertile_households:
             if self.random.random() < monthly_birth_prob:
-                # Syntyy uusi agentti
-                child = HouseholdAgent(
-                    model=self,
-                    age=0,
-                    initial_cash=self.child_initial_cash,
-                    propensity=parent.base_propensity_to_consume,
-                )
-                self.households.append(child)
-                if self.child_initial_cash > 0 and hasattr(self, "bank"):
-                    self.bank.record_new_deposit(self.child_initial_cash)
+                # v0.5: Lapsi kasvattaa perheen kokoa, ei luo agenttia
+                parent.household_size += 1
+                parent.num_children += 1
+                # Lapsi "aktivoituu" agentiksi vasta 18-25v iässä
     
     def birth_rate_multiplier(self) -> float:
         """Dynaaminen syntyvyyskerroin (valinnainen).
@@ -261,40 +454,54 @@ class EconomyModel(Model):
     def step(self) -> None:
         """Yksi kuukausi.
 
-        1. Yritykset maksavat palkat (brutto)
+        v0.4: Yksinkertaistettu - kulutus tapahtuu suoraan agenttien välillä.
+        
+        1. Yritykset tuottavat, päivittävät hinnat ja maksavat palkat (brutto)
         2. Valtio kerää tuloveron palkoista
         3. Valtio maksaa tuet ja eläkkeet
-        4. Kotitaloudet kuluttavat osan tuloistaan yritysten tuotteisiin
-        5. Kulutus → yritysten liikevaihto (+ ALV valtiolle)
+        4. Kotitaloudet kuluttavat ostamalla hyödykkeitä yrityksiltä dynaamiseen hintaan
+           (ALV kerätään ostohetkellä HouseholdAgent.consume():ssa)
+        5. Pankki hoitaa lainojen kassavirrat
         """
 
         self.month += 1
         self.total_consumption = 0.0
 
-        # Järjestys: valtio → yritykset → pankki → kotitaloudet
+        # Järjestys: valtio → yritykset → kotitaloudet → pankki
         self.state.step()
         for firm in self.firms:
             firm.step()
         for hh in self.households:
             hh.step()
 
-        # Kulutus → yritysten liikevaihto (+ ALV valtiolle)
-        if self.total_consumption > 0 and len(self.firms) > 0:
-            # Jaa kulutus tasaisesti yrityksille (v0.1 yksinkertaistus)
-            consumption_per_firm = self.total_consumption / len(self.firms)
-            vat_amount = consumption_per_firm * self.vat_rate
-            net_revenue = consumption_per_firm - vat_amount
-
-            for firm in self.firms:
-                firm.receive_revenue(net_revenue)
-            # Valtio kerää ALV:n
-            self.state.cash_balance += vat_amount * len(self.firms)
-
+        # v0.4: Kulutus ja ALV hoidetaan nyt HouseholdAgent.consume():ssa
+        # POISTETTU vanha kulutuksen jako-logiikka
+        
         # Pankki hoitaa lainojen kassavirrat kuukauden lopussa
         self.bank.step()
+        
+        # v0.5: Asuntomarkkina (hinnoittelu ja kaupankäynti)
+        self.housing_market_step()
+        
+        # Syntyvyys
+        self.process_births()
 
         # Kerätään data tämän kuukauden lopussa
         self.datacollector.collect(self)
+    
+    def housing_market_step(self) -> None:
+        """v0.5: Asuntomarkkinan kuukausittainen päivitys.
+        
+        1. Päivitä hinnat (segmentoituna kokojen mukaan)
+        2. Suorita kaupankäynti
+        3. Harkitse uudisrakentamista
+        """
+        # Tallenna CPI kuukausittaista muutosta varten
+        self.last_cpi = self.cpi
+        
+        self.housing_market.update_prices()
+        self.housing_market.execute_transactions()
+        self.housing_market.consider_new_construction()
 
     def run_for_months(self, n_months: int) -> None:
         for _ in range(n_months):

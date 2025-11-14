@@ -21,6 +21,7 @@ def main() -> None:
     print("\n=== Viimeinen kuukausi ===")
     last = model_df.iloc[-1]
     print(f"Kuukausi: {int(last['month'])}")
+    print(f"CPI: {last['cpi']:.4f} (aloitus: {model_df.iloc[0]['cpi']:.4f})")  # v0.4: UUSI
     print(f"Väestö: {int(last['population'])} (aloitus: {int(model_df.iloc[0]['population'])})")
     print(f"Työttömyysaste: {last['unemployment_rate']:.1%}")
     print(f"Keski-ikä: {last['avg_age']:.1f} vuotta")
@@ -36,12 +37,33 @@ def main() -> None:
 
     print("\n=== Keskiarvot koko ajalta ===")
     print(f"Väestön keskikoko: {model_df['population'].mean():.0f}")
+    print(f"CPI (ka): {model_df['cpi'].mean():.4f}")
+    print(f"CPI volatiliteetti (std): {model_df['cpi'].std():.4f}")
     print(f"Keskityöttömyys: {model_df['unemployment_rate'].mean():.1%}")
     print(f"Keski-ikä (ka): {model_df['avg_age'].mean():.1f} vuotta")
     print(f"Gini (ka): {model_df['gini_wealth'].mean():.3f}")
     print(f"M1 (ka): {model_df['money_supply_m1'].mean():,.0f} €")
     print(f"Pankin luottokanta (ka): {model_df['bank_total_loans'].mean():,.0f} €")
     print(f"Performoiva luottosuhde (ka): {model_df['bank_performing_share'].mean():.2%}")
+    
+    print("\n=== Asuntomarkkina (v0.5) ===")
+    print(f"Kotitalouden keskikoko: {model_df['avg_household_size'].mean():.2f} hlö")
+    print(f"Asukasta per asunto: {model_df['residents_per_dwelling'].mean():.2f} hlö/asunto")
+    print(f"Omistusasumisen aste: {model_df['housing_ownership_rate'].mean():.1%}")
+    print(f"Asuntojen keskihinta: {model_df['avg_house_price'].mean():,.0f} €")
+    print(f"  - Yksiöt (ka): {model_df['avg_house_price_size_1'].mean():,.0f} €")
+    print(f"  - Kaksiot (ka): {model_df['avg_house_price_size_2'].mean():,.0f} €")
+    print(f"  - Kolmiot (ka): {model_df['avg_house_price_size_3'].mean():,.0f} €")
+    print(f"  - Neliöt+ (ka): {model_df['avg_house_price_size_4'].mean():,.0f} €")
+    print(f"Kauppoja per kuukausi (ka): {model_df['housing_transactions'].mean():.1f}")
+    
+    print("\n=== Yrittäjyys (v0.6) ===")
+    print(f"Yrittäjyysaste: {last['entrepreneurship_rate']:.1%}")
+    print(f"Aktiivisia yrityksiä: {int(last['num_active_firms'])}")
+    print(f"Uusia yrityksiä/kk (ka): {model_df['firm_births_per_month'].mean():.2f}")
+    print(f"Konkursseja/kk (ka): {model_df['firm_deaths_per_month'].mean():.2f}")
+    print(f"Yritysten keski-ikä: {last['avg_firm_age']:.1f} kk")
+    print(f"Yrittäjien varallisuusosuus: {last['entrepreneur_wealth_share']:.1%}")
 
 
 if __name__ == "__main__":

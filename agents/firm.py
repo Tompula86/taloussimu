@@ -19,6 +19,8 @@ class FirmAgent(Agent):
         investment_loan_amount: float,
         investment_loan_term: int,
         investment_cash_buffer: float,
+        owner=None,
+        initial_equity: float = 0.0,
     ) -> None:
         super().__init__(model)
         self.wage_level = wage_level
@@ -30,6 +32,19 @@ class FirmAgent(Agent):
         self.investment_loan_term = max(1, investment_loan_term)
         self.investment_cash_buffer = max(0.0, investment_cash_buffer)
         self.months_since_investment: int = 0
+        
+        # v0.4: Dynaaminen hinnoittelu ja varasto
+        self.price: float = 1.0  # Aloitushinta yhdelle tuotteelle
+        self.inventory: float = 100.0  # Aloitusvarasto
+        self.production_per_month: float = 20.0  # Paljonko tuotetaan kuussa
+        self.target_inventory: float = 100.0  # Tavoitevarasto
+        
+        # v0.6: Yrittäjyys ja konkurssit
+        self.owner = owner  # Viite HouseholdAgent:iin (jos yrittäjäyritys)
+        self.equity: float = initial_equity  # Oma pääoma
+        self.alive: bool = True  # Onko yritys toiminnassa
+        self.founded_month: int = model.month  # Milloin perustettu
+        self.is_startup: bool = owner is not None  # Onko uusi yrittäjäyritys
 
     def pay_wages(self) -> float:
         """Maksetaan palkat yksinkertaiselle osalle kotitalouksista.
@@ -78,8 +93,44 @@ class FirmAgent(Agent):
         self.cash += amount
 
     def step(self) -> None:
+        if not self.alive:
+            return
+        
+        self._produce()
+        self._update_price()
         self._maybe_take_investment_loan()
         self.pay_wages()
+        self.check_bankruptcy()
+
+    def _produce(self) -> None:
+        """v0.4: Tuotanto lisää varastoa kuukausittain."""
+        self.inventory += self.production_per_month
+
+    def _update_price(self) -> None:
+        """v0.4: Yksinkertainen inventory targeting -hinnoittelusääntö.
+        
+        Jos varasto on alle 80% tavoitteesta → nosta hintaa (inflaatio)
+        Jos varasto on yli 120% tavoitteesta → laske hintaa (deflaatio)
+        """
+        if self.inventory < self.target_inventory * 0.8:
+            self.price *= 1.02  # Nosta hintaa 2%
+        elif self.inventory > self.target_inventory * 1.2:
+            self.price *= 0.98  # Laske hintaa 2%
+
+    def sell_goods(self, units: float) -> float:
+        """v0.4: Myy tuotteita ja palauttaa myynnin arvon.
+        
+        Args:
+            units: Haluttu ostosmäärä
+            
+        Returns:
+            Myydyn tavaran arvo (hinta × tosiasiallinen määrä)
+        """
+        units_to_sell = min(self.inventory, units)
+        revenue = units_to_sell * self.price
+        self.inventory -= units_to_sell
+        self.receive_revenue(revenue)
+        return revenue
 
     def _maybe_take_investment_loan(self) -> None:
         if self.investment_interval_months <= 0:
@@ -108,3 +159,38 @@ class FirmAgent(Agent):
             self.capital_stock += self.investment_loan_amount
             self.cash -= self.investment_loan_amount
             self.months_since_investment = 0
+
+    def check_bankruptcy(self) -> None:
+        """v0.6: Tarkista onko yritys maksukyvytön.
+        
+        Konkurssikriteeri: Velka > Varat JA negatiivinen kassa
+        Eli ei pysty maksamaan juoksevia kuluja eikä ole omaisuutta myytäväksi.
+        """
+        if not self.alive:
+            return
+            
+        total_assets = self.cash + self.capital_stock + self.inventory * self.price
+        
+        # Konkurssi jos velka ylittää varat JA kassa on negatiivinen
+        if self.debt > total_assets and self.cash < 0:
+            self._go_bankrupt()
+    
+    def _go_bankrupt(self) -> None:
+        """Suorita konkurssi."""
+        self.alive = False
+        
+        # Ilmoita omistajalle (jos yrittäjäyritys)
+        if self.owner is not None:
+            self.owner.handle_business_bankruptcy(self)
+        
+        # Vapauta työntekijät
+        if hasattr(self.model, "households"):
+            for household in self.model.households:
+                if household.employer == self:
+                    household.lose_job()
+        
+        # Pankki kirjaa tappion (yrityksen varat ei riitä velkaan)
+        if hasattr(self.model, "bank"):
+            # Varat menevät konkurssipesään, pankki saa osan
+            recovery_value = max(0.0, self.cash + self.capital_stock + self.inventory * self.price)
+            self.model.bank.handle_firm_bankruptcy(self, recovery_value)
